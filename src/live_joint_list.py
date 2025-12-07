@@ -10,8 +10,20 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from pythonosc import dispatcher
 from pythonosc import osc_server
+
+# Finger connections for drawing skeleton lines
+FINGER_CONNECTIONS = [
+    [1, 2, 3, 4, 5],       # Thumb: wrist -> tip
+    [1, 6, 7, 8, 9, 10],   # Index
+    [1, 11, 12, 13, 14, 15], # Middle
+    [1, 16, 17, 18, 19, 20], # Ring
+    [1, 21, 22, 23, 24, 25], # Little
+    [0, 1],                 # Palm to wrist
+]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -283,6 +295,11 @@ class JointListGUI:
                               command=self._export_csv, width=12)
         export_btn.pack(side=tk.LEFT, padx=5)
         
+        export_plot_btn = tk.Button(btn_frame, text="Export & Plot", 
+                              font=("Consolas", 10), fg="#fff", bg="#6a2a6e",
+                              command=self._export_and_plot, width=12)
+        export_plot_btn.pack(side=tk.LEFT, padx=5)
+        
         # Export counter
         self.export_count = 0
 
@@ -348,6 +365,101 @@ class JointListGUI:
             print(f"[Export] Saved both hand poses to {filepath}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export:\n{e}")
+
+    def _export_and_plot(self):
+        """Export to CSV and show 3D plot of hand poses."""
+        left_data = left_state.get()
+        right_data = right_state.get()
+        
+        if not left_data['has_data'] and not right_data['has_data']:
+            messagebox.showwarning("No Data", "No hand data available.")
+            return
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"both_hands_{timestamp}.csv"
+        
+        # Ask user where to save
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile=default_filename,
+            title="Export Hand Poses to CSV"
+        )
+        
+        if not filepath:
+            return
+        
+        # Export CSV
+        try:
+            with open(filepath, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["=== LEFT GLOVE ==="])
+                writer.writerow(["Index", "Joint Name", "X", "Y", "Z"])
+                for i in range(NUM_JOINTS):
+                    lx, ly, lz = left_data['positions'][i]
+                    writer.writerow([i, JOINT_NAMES[i], f"{lx:.6f}", f"{ly:.6f}", f"{lz:.6f}"])
+                writer.writerow([])
+                writer.writerow(["=== RIGHT GLOVE ==="])
+                writer.writerow(["Index", "Joint Name", "X", "Y", "Z"])
+                for i in range(NUM_JOINTS):
+                    rx, ry, rz = right_data['positions'][i]
+                    writer.writerow([i, JOINT_NAMES[i], f"{rx:.6f}", f"{ry:.6f}", f"{rz:.6f}"])
+            print(f"[Export] Saved to {filepath}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export:\n{e}")
+            return
+        
+        # Create 3D plot
+        self._show_3d_plot(left_data['positions'], right_data['positions'], filepath)
+    
+    def _show_3d_plot(self, left_pos, right_pos, filepath):
+        """Display 2D line plot of hand keypoints."""
+        fig, axes = plt.subplots(2, 3, figsize=(14, 8))
+        fig.suptitle(f"Hand Pose: {os.path.basename(filepath)}", fontsize=14, fontweight='bold')
+        
+        joint_indices = np.arange(NUM_JOINTS)
+        
+        # Left hand plots (top row)
+        axes[0, 0].plot(joint_indices, left_pos[:, 0], 'o-', color='#1f77b4', markersize=6, linewidth=1.5)
+        axes[0, 0].set_title('Left Hand - X', fontsize=11, fontweight='bold')
+        axes[0, 0].set_xlabel('Joint Index')
+        axes[0, 0].set_ylabel('X Value')
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        axes[0, 1].plot(joint_indices, left_pos[:, 1], 'o-', color='#1f77b4', markersize=6, linewidth=1.5)
+        axes[0, 1].set_title('Left Hand - Y', fontsize=11, fontweight='bold')
+        axes[0, 1].set_xlabel('Joint Index')
+        axes[0, 1].set_ylabel('Y Value')
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        axes[0, 2].plot(joint_indices, left_pos[:, 2], 'o-', color='#1f77b4', markersize=6, linewidth=1.5)
+        axes[0, 2].set_title('Left Hand - Z', fontsize=11, fontweight='bold')
+        axes[0, 2].set_xlabel('Joint Index')
+        axes[0, 2].set_ylabel('Z Value')
+        axes[0, 2].grid(True, alpha=0.3)
+        
+        # Right hand plots (bottom row)
+        axes[1, 0].plot(joint_indices, right_pos[:, 0], 'o-', color='#ff7f0e', markersize=6, linewidth=1.5)
+        axes[1, 0].set_title('Right Hand - X', fontsize=11, fontweight='bold')
+        axes[1, 0].set_xlabel('Joint Index')
+        axes[1, 0].set_ylabel('X Value')
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        axes[1, 1].plot(joint_indices, right_pos[:, 1], 'o-', color='#ff7f0e', markersize=6, linewidth=1.5)
+        axes[1, 1].set_title('Right Hand - Y', fontsize=11, fontweight='bold')
+        axes[1, 1].set_xlabel('Joint Index')
+        axes[1, 1].set_ylabel('Y Value')
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        axes[1, 2].plot(joint_indices, right_pos[:, 2], 'o-', color='#ff7f0e', markersize=6, linewidth=1.5)
+        axes[1, 2].set_title('Right Hand - Z', fontsize=11, fontweight='bold')
+        axes[1, 2].set_xlabel('Joint Index')
+        axes[1, 2].set_ylabel('Z Value')
+        axes[1, 2].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show(block=False)
 
     def _update(self):
         left_data = left_state.get()
