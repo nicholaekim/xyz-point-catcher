@@ -14,18 +14,7 @@ from matplotlib.widgets import Button
 from pythonosc import dispatcher
 from pythonosc import osc_server
 
-# Finger connections for drawing skeleton lines
-FINGER_CONNECTIONS = [
-    [1, 2, 3, 4, 5],       # Thumb: wrist -> tip
-    [1, 6, 7, 8, 9, 10],   # Index
-    [1, 11, 12, 13, 14, 15], # Middle
-    [1, 16, 17, 18, 19, 20], # Ring
-    [1, 21, 22, 23, 24, 25], # Little
-    [0, 1],                 # Palm to wrist
-]
-
 # Base hand skeleton positions (forms a hand shape for 3D visualization)
-# These are approximate positions that form a recognizable hand
 BASE_HAND_POSITIONS = np.array([
     [0.0, 0.0, 0.0],      # 0: Palm
     [0.0, -0.08, 0.0],    # 1: Wrist
@@ -54,6 +43,16 @@ BASE_HAND_POSITIONS = np.array([
     [0.10, 0.24, 0.0],    # 24: Little distal
     [0.10, 0.28, 0.0],    # 25: Little tip
 ])
+
+# Finger connections for drawing skeleton lines
+FINGER_CONNECTIONS = [
+    [1, 2, 3, 4, 5],       # Thumb: wrist -> tip
+    [1, 6, 7, 8, 9, 10],   # Index
+    [1, 11, 12, 13, 14, 15], # Middle
+    [1, 16, 17, 18, 19, 20], # Ring
+    [1, 21, 22, 23, 24, 25], # Little
+    [0, 1],                 # Palm to wrist
+]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,31 +96,34 @@ NUM_JOINTS = 26
 class HandState:
     def __init__(self):
         self.lock = threading.Lock()
-        self.positions = np.zeros((NUM_JOINTS, 3))
+        self.rotations = np.zeros((NUM_JOINTS, 3))  # Quaternion xyz for joint list display
+        self.positions = np.zeros((NUM_JOINTS, 3))  # XYZ positions for 3D visualization
         self.device_name = ""
         self.packet_count = 0
         self.has_data = False
         self.calibrated = False
-        self.offset = np.zeros((NUM_JOINTS, 3))
+        self.rotation_offset = np.zeros((NUM_JOINTS, 3))
 
-    def update(self, device_name: str, positions: np.ndarray):
+    def update(self, device_name: str, rotations: np.ndarray, positions: np.ndarray):
         with self.lock:
             if not self.calibrated:
-                self.offset = positions.copy()
+                self.rotation_offset = rotations.copy()
                 self.calibrated = True
             self.device_name = device_name
-            self.positions = positions - self.offset
+            self.rotations = rotations - self.rotation_offset
+            self.positions = positions
             self.packet_count += 1
             self.has_data = True
 
     def reset_calibration(self):
         with self.lock:
             self.calibrated = False
-            self.positions = np.zeros((NUM_JOINTS, 3))
+            self.rotations = np.zeros((NUM_JOINTS, 3))
 
     def get(self):
         with self.lock:
             return {
+                "rotations": self.rotations.copy(),
                 "positions": self.positions.copy(),
                 "device_name": self.device_name,
                 "packet_count": self.packet_count,
@@ -150,24 +152,31 @@ def default_handler(address: str, *args):
         values_per_joint = 7  # x, y, z, qw, qx, qy, qz
         
         positions = np.zeros((NUM_JOINTS, 3))
+        rotations = np.zeros((NUM_JOINTS, 3))
         for i in range(NUM_JOINTS):
             base = i * values_per_joint
-            # Get quaternion (indices 3,4,5,6 after xyz) and convert to euler-like values
-            qw = float(joint_data[base + 3])
-            qx = float(joint_data[base + 4])
-            qy = float(joint_data[base + 5])
-            qz = float(joint_data[base + 6])
-            # Store quaternion components as "XYZ" for display (these change with movement)
-            positions[i, 0] = qx
-            positions[i, 1] = qy
-            positions[i, 2] = qz
+            # Get XYZ position data (indices 0,1,2) for 3D visualization
+            positions[i, 0] = float(joint_data[base + 0])
+            positions[i, 1] = float(joint_data[base + 1])
+            positions[i, 2] = float(joint_data[base + 2])
+            # Get quaternion xyz (indices 4,5,6) for joint rotation display
+            rotations[i, 0] = float(joint_data[base + 4])
+            rotations[i, 1] = float(joint_data[base + 5])
+            rotations[i, 2] = float(joint_data[base + 6])
+        
+        # Tip joints (5,10,15,20,25) don't have independent rotation - inherit from parent (distal) joint
+        rotations[5] = rotations[4]    # Thumb tip <- Thumb distal
+        rotations[10] = rotations[9]   # Index tip <- Index distal
+        rotations[15] = rotations[14]  # Middle tip <- Middle distal
+        rotations[20] = rotations[19]  # Ring tip <- Ring distal
+        rotations[25] = rotations[24]  # Little tip <- Little distal
         
         # Route to correct hand based on device name
         # Device names are "Reality Glove (L)" and "Reality Glove (R)"
         if "(l)" in device_name or "left" in device_name:
-            left_state.update(device_name, positions)
+            left_state.update(device_name, rotations, positions)
         else:
-            right_state.update(device_name, positions)
+            right_state.update(device_name, rotations, positions)
     except Exception as e:
         print(f"[Error] {e}")
 
@@ -416,7 +425,7 @@ class JointListGUI:
             ax.clear()
             ax.set_title(title, fontsize=12, fontweight='bold')
             
-            # Combine base hand shape with quaternion movement data
+            # Use base hand shape + rotation offsets for visualization
             movement_scale = 0.3
             display_positions = BASE_HAND_POSITIONS + (positions * movement_scale)
             
@@ -484,19 +493,19 @@ class JointListGUI:
             
             # Record frame if recording
             if self.recording:
-                self.recorded_frames.append((left_data['positions'].copy(), right_data['positions'].copy()))
+                self.recorded_frames.append((left_data['rotations'].copy(), right_data['rotations'].copy()))
             
             # Draw left hand
             self.live_3d_ax_left.clear()
             self.live_3d_ax_left.set_title('Left Hand', fontsize=12, fontweight='bold', color='#ff9966')
             if left_data['has_data']:
-                self._draw_skeleton_3d(self.live_3d_ax_left, left_data['positions'], 'green')
+                self._draw_skeleton_3d(self.live_3d_ax_left, left_data['rotations'], 'green')
             
             # Draw right hand
             self.live_3d_ax_right.clear()
             self.live_3d_ax_right.set_title('Right Hand', fontsize=12, fontweight='bold', color='#66ccff')
             if right_data['has_data']:
-                self._draw_skeleton_3d(self.live_3d_ax_right, right_data['positions'], 'blue')
+                self._draw_skeleton_3d(self.live_3d_ax_right, right_data['rotations'], 'blue')
             
             return []
         
@@ -516,12 +525,11 @@ class JointListGUI:
         plt.tight_layout(rect=[0, 0.08, 1, 1])
         plt.show(block=False)
     
-    def _draw_skeleton_3d(self, ax, positions, color):
+    def _draw_skeleton_3d(self, ax, rotations, color):
         """Draw 3D hand skeleton on given axes."""
-        # Combine base hand shape with quaternion movement data
-        # Scale the movement data to make it visible
+        # Use base hand shape + rotation offsets for visualization
         movement_scale = 0.3
-        display_positions = BASE_HAND_POSITIONS + (positions * movement_scale)
+        display_positions = BASE_HAND_POSITIONS + (rotations * movement_scale)
         
         # Plot joints as red dots
         ax.scatter(display_positions[:, 0], display_positions[:, 1], display_positions[:, 2], 
@@ -633,7 +641,7 @@ class JointListGUI:
         if left_data['has_data']:
             self.left_device_label.config(text=f"Left: {left_data['device_name']}")
             for i in range(NUM_JOINTS):
-                x, y, z = left_data['positions'][i]
+                x, y, z = left_data['rotations'][i]
                 self.left_labels[i][0].config(text=f"{x:+.3f}")
                 self.left_labels[i][1].config(text=f"{y:+.3f}")
                 self.left_labels[i][2].config(text=f"{z:+.3f}")
@@ -641,7 +649,7 @@ class JointListGUI:
         if right_data['has_data']:
             self.right_device_label.config(text=f"Right: {right_data['device_name']}")
             for i in range(NUM_JOINTS):
-                x, y, z = right_data['positions'][i]
+                x, y, z = right_data['rotations'][i]
                 self.right_labels[i][0].config(text=f"{x:+.3f}")
                 self.right_labels[i][1].config(text=f"{y:+.3f}")
                 self.right_labels[i][2].config(text=f"{z:+.3f}")
